@@ -25,12 +25,19 @@ class F1SessionResult(BaseModel):
     dns: bool
     dsq: bool
     driver_number: int
-    duration: List[Union[float, None]]
-    gap_to_leader: List[Union[float, None]]
     number_of_laps: int
     meeting_key: Union[int, str]
-    position: int
     session_key: int
+
+    # --- Fix 2: Type Correction for duration, gap_to_leader, and position ---
+
+    # 'duration' and 'gap_to_leader' are simple float or None, NOT List[Union[float, None]]
+    duration: Union[float, None] = None
+    gap_to_leader: Union[float, str, int, None] = None 
+    # 'gap_to_leader' can be a float, an int (0 for the leader), a string ('+1 LAP'), or None.
+
+    # 'position' is an int or None, NOT just an int
+    position: Union[int, None] = None
 
 
 class GetF1SessionsResponse(BaseModel):

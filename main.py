@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from utils import race_session
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, SessionType, GetSessionResultsResponse
+import logging
 
 app = FastAPI()
 

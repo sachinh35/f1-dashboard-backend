@@ -1,11 +1,26 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from utils import race_session
+from utils import race_session, lap_data
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, SessionType, GetSessionResultsResponse
+from api_pydantic_models.lap_data import LapDataRequest, GetSessionLapDataResponse
+from utils.database import DatabaseManager
 import logging
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database connection pool on startup."""
+    await DatabaseManager.get_pool()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database connection pool on shutdown."""
+    await DatabaseManager.close_pool()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,3 +59,47 @@ async def get_session_results(session_key: int) -> GetSessionResultsResponse:
     except Exception as e:
         print(e)
         raise e
+
+
+@app.post("/session-lap-data/{session_key}")
+async def get_session_lap_data(
+    session_key: int,
+    request: LapDataRequest
+) -> GetSessionLapDataResponse:
+    """
+    Get lap data for a specific session and driver(s).
+    
+    - Checks PostgreSQL database first
+    - If data not found, fetches from OpenF1 API, stores in DB, then returns
+    - Returns data filtered by requested driver_numbers
+    
+    Args:
+        session_key: Session identifier (path parameter)
+        request: Request body containing driver_numbers list
+        
+    Returns:
+        GetSessionLapDataResponse with lap data for requested drivers
+    """
+    try:
+        if not request.driver_numbers:
+            raise HTTPException(
+                status_code=400, 
+                detail="driver_numbers list cannot be empty"
+            )
+        
+        print(f"Fetching lap data for session_key: {session_key}, drivers: {request.driver_numbers}")
+        lap_data_list = await lap_data.get_lap_data_for_session(
+            session_key=session_key,
+            driver_numbers=request.driver_numbers
+        )
+        
+        print(f"Returning {len(lap_data_list)} lap records")
+        return GetSessionLapDataResponse(
+            session_key=session_key,
+            lap_data=lap_data_list
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_session_lap_data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch lap data: {str(e)}")

@@ -34,6 +34,7 @@ class EnrichedF1SessionResult(BaseModel):
     name_acronym: str
     first_name: str
     last_name: str
+    country_code: str
 
 
 class GetSessionResultsResponse(BaseModel):

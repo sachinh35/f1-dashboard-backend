@@ -74,6 +74,7 @@ async def get_results_by_session_key(session_key: int) -> List[EnrichedF1Session
                         name_acronym=driver_info.name_acronym,
                         first_name=driver_info.first_name,
                         last_name=driver_info.last_name,
+                        country_code=driver_info.country_code,
                     )
                     enriched_results.append(enriched_result)
 

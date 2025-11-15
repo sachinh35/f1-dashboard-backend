@@ -34,7 +34,7 @@ class EnrichedF1SessionResult(BaseModel):
     name_acronym: str
     first_name: str
     last_name: str
-    country_code: str
+    country_code: Union[str, None] = None
 
 
 class GetSessionResultsResponse(BaseModel):

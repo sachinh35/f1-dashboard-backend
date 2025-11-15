@@ -14,4 +14,4 @@ class DriverInfo(BaseModel):
     first_name: str
     last_name: str
     headshot_url: Optional[str]
-    country_code: str
+    country_code: Optional[str] = None

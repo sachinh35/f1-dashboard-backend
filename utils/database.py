@@ -7,6 +7,7 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 from config.database_config import DatabaseConfig
 from api_pydantic_models.lap_data import LapDataDB
+from api_pydantic_models.stints import StintDB
 
 
 class DatabaseManager:
@@ -176,5 +177,87 @@ async def insert_lap_data_batch(lap_data_list: List[LapDataDB]) -> None:
                 )
                 for lap in lap_data_list
             ]
+        )
+
+
+# -----------------------------
+# Stints helpers
+# -----------------------------
+
+async def check_session_stints_exists(session_key: int) -> bool:
+    async with DatabaseManager.get_connection() as conn:
+        query = """
+            SELECT EXISTS(
+                SELECT 1 FROM stints WHERE session_key = $1
+            )
+        """
+        return await conn.fetchval(query, session_key)
+
+
+async def get_stints_from_db(session_key: int) -> List[StintDB]:
+    async with DatabaseManager.get_connection() as conn:
+        query = """
+            SELECT 
+                id, meeting_key, session_key, driver_number, stint_number,
+                lap_start, lap_end, compound, tyre_age_at_start,
+                created_at, updated_at
+            FROM stints
+            WHERE session_key = $1
+            ORDER BY driver_number, stint_number
+        """
+        rows = await conn.fetch(query, session_key)
+        return [
+            StintDB(
+                id=row["id"],
+                meeting_key=row["meeting_key"],
+                session_key=row["session_key"],
+                driver_number=row["driver_number"],
+                stint_number=row["stint_number"],
+                lap_start=row["lap_start"],
+                lap_end=row["lap_end"],
+                compound=row["compound"],
+                tyre_age_at_start=row["tyre_age_at_start"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+
+async def insert_stints_batch(stints: List[StintDB]) -> None:
+    if not stints:
+        return
+    async with DatabaseManager.get_connection() as conn:
+        query = """
+            INSERT INTO stints (
+                meeting_key, session_key, driver_number, stint_number,
+                lap_start, lap_end, compound, tyre_age_at_start
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8
+            )
+            ON CONFLICT (session_key, driver_number, stint_number)
+            DO UPDATE SET
+                meeting_key = EXCLUDED.meeting_key,
+                lap_start = EXCLUDED.lap_start,
+                lap_end = EXCLUDED.lap_end,
+                compound = EXCLUDED.compound,
+                tyre_age_at_start = EXCLUDED.tyre_age_at_start,
+                updated_at = CURRENT_TIMESTAMP
+        """
+        await conn.executemany(
+            query,
+            [
+                (
+                    s.meeting_key,
+                    s.session_key,
+                    s.driver_number,
+                    s.stint_number,
+                    s.lap_start,
+                    s.lap_end,
+                    s.compound,
+                    s.tyre_age_at_start,
+                )
+                for s in stints
+            ],
         )
 

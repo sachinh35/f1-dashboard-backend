@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from utils import race_session, lap_data
+from utils import race_session, lap_data, stints
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, SessionType, GetSessionResultsResponse
 from api_pydantic_models.lap_data import LapDataRequest, GetSessionLapDataResponse
+from api_pydantic_models.stints import GetSessionStintsResponse
 from utils.database import DatabaseManager
 import logging
 
@@ -52,12 +53,12 @@ def get_session_types() -> GetAllSessionTypesResponse:
 @app.get("/session-results/{session_key}")
 async def get_session_results(session_key: int) -> GetSessionResultsResponse:
     try:
-        print("session_key: {}".format(session_key))
+        logging.info("Request: session results for session_key=%s", session_key)
         results = await race_session.get_results_by_session_key(session_key=session_key)
-        print("results: {}".format(results))
+        logging.info("Response: returning %d session results for session_key=%s", len(results), session_key)
         return GetSessionResultsResponse(results=results)
     except Exception as e:
-        print(e)
+        logging.exception("Error in get_session_results for session_key=%s", session_key)
         raise e
 
 
@@ -87,13 +88,12 @@ async def get_session_lap_data(
                 detail="driver_numbers list cannot be empty"
             )
         
-        print(f"Fetching lap data for session_key: {session_key}, drivers: {request.driver_numbers}")
+        logging.info("Request: lap data for session_key=%s drivers=%s", session_key, request.driver_numbers)
         lap_data_list = await lap_data.get_lap_data_for_session(
             session_key=session_key,
             driver_numbers=request.driver_numbers
         )
-        
-        print(f"Returning {len(lap_data_list)} lap records")
+        logging.info("Response: returning %d lap records for session_key=%s", len(lap_data_list), session_key)
         return GetSessionLapDataResponse(
             session_key=session_key,
             lap_data=lap_data_list
@@ -101,5 +101,24 @@ async def get_session_lap_data(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in get_session_lap_data: {e}")
+        logging.exception("Error in get_session_lap_data for session_key=%s", session_key)
         raise HTTPException(status_code=500, detail=f"Failed to fetch lap data: {str(e)}")
+
+
+@app.get("/session-stints/{session_key}")
+async def get_session_stints(session_key: int) -> GetSessionStintsResponse:
+    """
+    Get stints for a specific session.
+    - Checks DB first
+    - If absent, fetches from OpenF1, stores, then returns
+    """
+    try:
+        logging.info("Request: stints for session_key=%s", session_key)
+        stint_list = await stints.get_stints_for_session(session_key)
+        logging.info("Response: returning %d stints for session_key=%s", len(stint_list), session_key)
+        return GetSessionStintsResponse(session_key=session_key, stints=stint_list)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Error in get_session_stints for session_key=%s", session_key)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch stints: {str(e)}")

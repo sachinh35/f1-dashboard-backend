@@ -58,3 +58,27 @@ CREATE TRIGGER update_lap_data_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+-- Stints Table Schema
+CREATE TABLE IF NOT EXISTS stints (
+    id SERIAL PRIMARY KEY,
+    meeting_key INTEGER NOT NULL,
+    session_key INTEGER NOT NULL,
+    driver_number INTEGER NOT NULL,
+    stint_number INTEGER NOT NULL,
+    lap_start INTEGER NOT NULL,
+    lap_end INTEGER NOT NULL,
+    compound VARCHAR(20),
+    tyre_age_at_start INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_stint_per_driver_session UNIQUE(session_key, driver_number, stint_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stints_session ON stints(session_key);
+CREATE INDEX IF NOT EXISTS idx_stints_session_driver ON stints(session_key, driver_number);
+
+CREATE TRIGGER update_stints_updated_at 
+    BEFORE UPDATE ON stints
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+

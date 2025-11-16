@@ -5,6 +5,9 @@ from api_pydantic_models.race_sesssions import EnrichedF1SessionResult
 from openf1_pydantic_models.f1_drivers import DriverInfo
 import httpx
 from typing import List
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def get_races_by_year(year: int) -> list[RaceInfo]:
@@ -20,7 +23,7 @@ async def get_races_by_year(year: int) -> list[RaceInfo]:
                          all_races.sessions]
             return sorted(race_info, key=lambda x: x.location)
     except Exception as e:
-        print(e)
+        logger.exception("Failed to fetch races for year=%s", year)
         raise e
 
 
@@ -30,7 +33,7 @@ async def get_results_by_session_key(session_key: int) -> List[EnrichedF1Session
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            print("Invoking GetSessionResponse")
+            logger.info("Invoking GetSessionResponse for session_key=%s", session_key)
             response = await client.get(SESSION_RESULTS_API_URL, params=parameters)
             validated_response = GetF1SessionResultResponse(session_result=response.json())
 
@@ -49,7 +52,6 @@ async def get_results_by_session_key(session_key: int) -> List[EnrichedF1Session
                 "session_key": session_key
             }
             driver_response = await client.get(DRIVERS_API_URL, params=driver_params)
-            print("driver_response: {}".format(driver_response.json()))
             driver_info_list = [DriverInfo(**driver) for driver in driver_response.json()]
 
             # Create a lookup map for efficient access
@@ -80,5 +82,5 @@ async def get_results_by_session_key(session_key: int) -> List[EnrichedF1Session
 
             return enriched_results
     except Exception as e:
-        print(e)
+        logger.exception("Failed to fetch session results for session_key=%s", session_key)
         raise e

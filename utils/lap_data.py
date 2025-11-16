@@ -13,6 +13,9 @@ from utils.database import (
     get_lap_data_from_db,
     insert_lap_data_batch
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def fetch_laps_from_openf1(session_key: int) -> List[F1LapData]:
@@ -36,9 +39,10 @@ async def fetch_laps_from_openf1(session_key: int) -> List[F1LapData]:
             
             # Parse response into Pydantic models
             laps_data = [F1LapData(**lap) for lap in response.json()]
+            logger.info("Fetched %d lap records from OpenF1 for session_key=%s", len(laps_data), session_key)
             return laps_data
     except Exception as e:
-        print(f"Error fetching lap data from OpenF1 API: {e}")
+        logger.exception("Error fetching lap data from OpenF1 API for session_key=%s", session_key)
         raise e
 
 
@@ -147,11 +151,11 @@ async def get_lap_data_for_session(
     
     if data_exists:
         # Fetch from database
-        print(f"Lap data found in DB for session {session_key}, drivers {driver_numbers}")
+        logger.info("Lap data served from DB cache for session_key=%s drivers=%s", session_key, driver_numbers)
         db_laps = await get_lap_data_from_db(session_key, driver_numbers)
     else:
         # Fetch from OpenF1 API
-        print(f"Lap data not in DB for session {session_key}, fetching from OpenF1 API")
+        logger.info("Lap data not found in DB. Fetching from OpenF1 for session_key=%s", session_key)
         openf1_laps = await fetch_laps_from_openf1(session_key)
         
         # Convert to DB models
@@ -159,11 +163,12 @@ async def get_lap_data_for_session(
         
         # Store in database (batch insert)
         if db_lap_models:
-            print(f"Inserting {len(db_lap_models)} lap records into database")
+            logger.info("Inserting %d lap records into DB for session_key=%s", len(db_lap_models), session_key)
             await insert_lap_data_batch(db_lap_models)
         
         # Fetch from database to ensure consistency (includes any updates from ON CONFLICT)
         db_laps = await get_lap_data_from_db(session_key, driver_numbers)
+        logger.info("Lap data served after OpenF1 fetch for session_key=%s drivers=%s", session_key, driver_numbers)
     
     # Filter by requested driver numbers and convert to response model
     filtered_laps = [

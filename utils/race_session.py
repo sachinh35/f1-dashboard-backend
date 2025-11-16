@@ -19,8 +19,15 @@ async def get_races_by_year(year: int) -> list[RaceInfo]:
             response = await client.get(SESSIONS_API_URL, params=parameters)
 
             all_races = GetF1SessionsResponse(sessions=response.json())
-            race_info = [RaceInfo(session_key=s.session_key, location=s.location, session_name=s.session_name) for s in
-                         all_races.sessions]
+            race_info = [
+                RaceInfo(
+                    session_key=s.session_key,
+                    location=s.location,
+                    session_name=s.session_name,
+                    country_code=s.country_code
+                )
+                for s in all_races.sessions
+            ]
             return sorted(race_info, key=lambda x: x.location)
     except Exception as e:
         logger.exception("Failed to fetch races for year=%s", year)

@@ -10,6 +10,7 @@ class RaceInfo(BaseModel):
     session_key: int
     location: str
     session_name: str
+    country_code: str
 
 
 class GetRacesForYearsResponse(BaseModel):

@@ -8,6 +8,11 @@ from api_pydantic_models.stints import GetSessionStintsResponse
 from utils.database import DatabaseManager
 import logging
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+)
+
 app = FastAPI()
 
 

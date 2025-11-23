@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from utils import race_session, lap_data, stints
+from utils import race_session, lap_data, stints, race_control
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, SessionType, GetSessionResultsResponse
 from api_pydantic_models.lap_data import LapDataRequest, GetSessionLapDataResponse
 from api_pydantic_models.stints import GetSessionStintsResponse
+from api_pydantic_models.race_control import GetSessionRaceControlEventsResponse
 from utils.database import DatabaseManager
 import logging
 
@@ -127,3 +128,22 @@ async def get_session_stints(session_key: int) -> GetSessionStintsResponse:
     except Exception as e:
         logging.exception("Error in get_session_stints for session_key=%s", session_key)
         raise HTTPException(status_code=500, detail=f"Failed to fetch stints: {str(e)}")
+
+
+@app.get("/session-race-control-events/{session_key}")
+async def get_session_race_control_events(session_key: int) -> GetSessionRaceControlEventsResponse:
+    """
+    Get race control events for a specific session.
+    - Checks DB first
+    - If absent, fetches from OpenF1, stores, then returns
+    """
+    try:
+        logging.info("Request: race control events for session_key=%s", session_key)
+        event_list = await race_control.get_race_control_events_for_session(session_key)
+        logging.info("Response: returning %d race control events for session_key=%s", len(event_list), session_key)
+        return GetSessionRaceControlEventsResponse(session_key=session_key, events=event_list)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Error in get_session_race_control_events for session_key=%s", session_key)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch race control events: {str(e)}")

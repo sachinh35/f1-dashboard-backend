@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from config.database_config import DatabaseConfig
 from api_pydantic_models.lap_data import LapDataDB
 from api_pydantic_models.stints import StintDB
+from api_pydantic_models.race_control import RaceControlEventDB
 
 
 class DatabaseManager:
@@ -259,5 +260,82 @@ async def insert_stints_batch(stints: List[StintDB]) -> None:
                 )
                 for s in stints
             ],
+        )
+
+
+# -----------------------------
+# Race Control Events helpers
+# -----------------------------
+
+async def check_race_control_events_exists(session_key: int) -> bool:
+    """Check if race control events exist for a session."""
+    async with DatabaseManager.get_connection() as conn:
+        query = """
+            SELECT EXISTS(
+                SELECT 1 FROM race_control_events WHERE session_key = $1
+            )
+        """
+        return await conn.fetchval(query, session_key)
+
+
+async def get_race_control_events_from_db(session_key: int) -> List[RaceControlEventDB]:
+    """Get race control events from DB for a session."""
+    async with DatabaseManager.get_connection() as conn:
+        query = """
+            SELECT 
+                id, meeting_key, session_key, date, category, message,
+                scope, sector, driver_number, flag,
+                created_at, updated_at
+            FROM race_control_events
+            WHERE session_key = $1
+            ORDER BY date
+        """
+        rows = await conn.fetch(query, session_key)
+        return [
+            RaceControlEventDB(
+                id=row['id'],
+                meeting_key=row['meeting_key'],
+                session_key=row['session_key'],
+                date=row['date'],
+                category=row['category'],
+                message=row['message'],
+                scope=row['scope'],
+                sector=row['sector'],
+                driver_number=row['driver_number'],
+                flag=row['flag'],
+                created_at=row['created_at'].isoformat() if row['created_at'] else None,
+                updated_at=row['updated_at'].isoformat() if row['updated_at'] else None
+            )
+            for row in rows
+        ]
+
+
+async def insert_race_control_events_batch(events: List[RaceControlEventDB]) -> None:
+    """Insert race control events into DB."""
+    if not events:
+        return
+    async with DatabaseManager.get_connection() as conn:
+        query = """
+            INSERT INTO race_control_events (
+                meeting_key, session_key, date, category, message,
+                scope, sector, driver_number, flag
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """
+        await conn.executemany(
+            query,
+            [
+                (
+                    event.meeting_key,
+                    event.session_key,
+                    event.date,
+                    event.category,
+                    event.message,
+                    event.scope,
+                    event.sector,
+                    event.driver_number,
+                    event.flag
+                )
+                for event in events
+            ]
         )
 

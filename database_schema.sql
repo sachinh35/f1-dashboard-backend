@@ -82,3 +82,29 @@ CREATE TRIGGER update_stints_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+-- Race Control Events Table Schema
+CREATE TABLE IF NOT EXISTS race_control_events (
+    id SERIAL PRIMARY KEY,
+    meeting_key INTEGER NOT NULL,
+    session_key INTEGER NOT NULL,
+    date TIMESTAMP NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    message TEXT NOT NULL,
+    scope VARCHAR(20),
+    sector INTEGER,
+    driver_number INTEGER,
+    flag VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_race_control_session ON race_control_events(session_key);
+CREATE INDEX IF NOT EXISTS idx_race_control_session_date ON race_control_events(session_key, date);
+CREATE INDEX IF NOT EXISTS idx_race_control_driver ON race_control_events(session_key, driver_number) WHERE driver_number IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_race_control_sector ON race_control_events(session_key, sector) WHERE sector IS NOT NULL;
+
+CREATE TRIGGER update_race_control_events_updated_at 
+    BEFORE UPDATE ON race_control_events
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+

@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List, Union
+from typing import List, Union, Optional
 
 
 class F1Session(BaseModel):
@@ -25,7 +25,7 @@ class F1SessionResult(BaseModel):
     dns: bool
     dsq: bool
     driver_number: int
-    number_of_laps: int
+    number_of_laps: Optional[int] = None
     meeting_key: Union[int, str]
     session_key: int
 

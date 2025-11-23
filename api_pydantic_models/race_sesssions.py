@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Union
+from typing import List, Union, Optional
 from enum import Enum
 
 
@@ -17,7 +17,7 @@ class EnrichedF1SessionResult(BaseModel):
     dns: bool
     dsq: bool
     driver_number: int
-    number_of_laps: int
+    number_of_laps: Optional[int] = None
     meeting_key: Union[int, str]
     session_key: int
 

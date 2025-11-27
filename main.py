@@ -1,11 +1,17 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from utils import race_session, lap_data, stints, race_control
+from utils import race_session, lap_data, stints, race_control, live_stream, f1_auth
 from api_pydantic_models.races import GetAvailableYearsResponse, GetRacesForYearsResponse
 from api_pydantic_models.race_sesssions import GetAllSessionTypesResponse, SessionType, GetSessionResultsResponse
 from api_pydantic_models.lap_data import LapDataRequest, GetSessionLapDataResponse
 from api_pydantic_models.stints import GetSessionStintsResponse
 from api_pydantic_models.race_control import GetSessionRaceControlEventsResponse
+from api_pydantic_models.live_stream import (
+    StartStreamRequest, 
+    StartStreamResponse,
+    AuthenticateRequest,
+    AuthenticateResponse
+)
 from utils.database import DatabaseManager
 import logging
 
@@ -147,3 +153,94 @@ async def get_session_race_control_events(session_key: int) -> GetSessionRaceCon
     except Exception as e:
         logging.exception("Error in get_session_race_control_events for session_key=%s", session_key)
         raise HTTPException(status_code=500, detail=f"Failed to fetch race control events: {str(e)}")
+
+
+@app.post("/authenticate-f1tv", response_model=AuthenticateResponse)
+async def authenticate_f1tv(request: AuthenticateRequest) -> AuthenticateResponse:
+    """
+    Authenticate with F1 TV Pro using email and password.
+    
+    Args:
+        request: Request containing email and password
+        
+    Returns:
+        AuthenticateResponse with access token and cookies
+    """
+    try:
+        logging.info("Request: F1 TV Pro authentication for email: %s", request.email)
+        
+        auth_result = await f1_auth.authenticate_f1tv(
+            email=request.email,
+            password=request.password
+        )
+        
+        logging.info("Response: F1 TV Pro authentication successful")
+        
+        return AuthenticateResponse(
+            success=True,
+            access_token=auth_result["access_token"],
+            cookies=auth_result.get("cookies"),
+            message="Authentication successful"
+        )
+        
+    except Exception as e:
+        logging.exception("Error in F1 TV Pro authentication")
+        raise HTTPException(
+            status_code=401,
+            detail=f"F1 TV Pro authentication failed: {str(e)}"
+        )
+
+
+@app.post("/start-live-stream", response_model=StartStreamResponse)
+async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
+    """
+    Start a live stream from F1's SignalR client.
+    
+    - Receives F1 TV Pro authentication tokens from frontend
+    - Connects to F1 SignalR hub
+    - Logs all events to console and saves to a unique file
+    - Returns stream information
+    
+    Args:
+        request: Request containing access_token and optional refresh_token
+        
+    Returns:
+        StartStreamResponse with stream ID and log file path
+    """
+    try:
+        logging.info("Request: starting live stream")
+        
+        if not request.access_token:
+            raise HTTPException(
+                status_code=400,
+                detail="access_token is required"
+            )
+        
+        # Start the stream
+        streamer = live_stream.start_stream(
+            access_token=request.access_token,
+            refresh_token=request.refresh_token,
+            cookies=request.cookies
+        )
+        
+        stream_info = streamer.get_stream_info()
+        
+        logging.info(
+            "Response: live stream started successfully. stream_id=%s, log_file=%s",
+            stream_info["stream_id"],
+            stream_info["log_file"]
+        )
+        
+        return StartStreamResponse(
+            success=True,
+            message="Live stream started successfully",
+            stream_id=stream_info["stream_id"],
+            log_file=stream_info["log_file"] or "unknown"
+        )
+        
+    except Exception as e:
+        logging.exception("Error starting live stream")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start live stream: {str(e)}"
+        )

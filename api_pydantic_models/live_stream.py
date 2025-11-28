@@ -7,7 +7,7 @@ from typing import Optional
 
 class StartStreamRequest(BaseModel):
     """Request model for starting a live stream."""
-    access_token: str = Field(..., description="F1 TV Pro access token for authentication")
+    access_token: Optional[str] = Field(None, description="F1 TV Pro access token for authentication (optional if saved token exists)")
     refresh_token: Optional[str] = Field(None, description="F1 TV Pro refresh token (optional)")
     cookies: Optional[str] = Field(None, description="F1 TV Pro session cookies (optional)")
 

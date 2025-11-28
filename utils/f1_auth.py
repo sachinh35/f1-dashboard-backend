@@ -1,118 +1,146 @@
 """
 F1 TV Pro Authentication Utility
-Simple email/password authentication using F1's /authenticate/by-password endpoint.
 """
-import httpx
 import logging
 import os
-from typing import Dict, Any
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+import httpx
+import jwt
+import platformdirs
+import requests
+from jwt.algorithms import RSAAlgorithm
 
 logger = logging.getLogger(__name__)
 
-# F1 TV Pro authentication endpoint
+# F1 TV Pro authentication endpoint (Legacy/Password)
 F1_AUTH_URL = "https://api.formula1.com/v1/account/subscriber/authenticate/by-password"
+JWKS_URL = "https://api.formula1.com/static/jwks.json"
 
-# F1 API Key - must be set via environment variable F1_API_KEY
+# Token storage
+USER_DATA_DIR = Path(platformdirs.user_data_dir("f1-dashboard", ensure_exists=True))
+AUTH_DATA_FILE = USER_DATA_DIR / "f1auth.json"
+
+# F1 API Key - must be set via environment variable F1_API_KEY (for password auth)
 F1_API_KEY = os.getenv("F1_API_KEY", "")
 
 
-async def authenticate_f1tv(email: str, password: str) -> Dict[str, Any]:
+def _get_jwk_from_jwks_uri(jwks_uri, kid):
+    """Fetch the JWKS data and find the key with matching kid."""
+    response = requests.get(jwks_uri)
+    response.raise_for_status()
+    jwks = response.json()
+
+    for key in jwks['keys']:
+        if key['kid'] == kid:
+            return key
+    raise ValueError("Public key not found in JWKS for given kid.")
+
+
+def validate_subscription_token(token: str) -> bool:
     """
-    Authenticate with F1 TV Pro using email and password.
-    
-    Args:
-        email: F1 TV Pro account email
-        password: F1 TV Pro account password
-        
-    Returns:
-        Dictionary containing access_token, cookies, and other auth data
-        
-    Raises:
-        Exception: If authentication fails or F1_API_KEY is not set
+    Verify the JWT token against F1's public keys.
     """
-    if not F1_API_KEY:
-        error_msg = (
-            "F1_API_KEY environment variable is required. "
-            "Please set it before running the application.\n"
-            "To find the API key:\n"
-            "1. Open https://www.formula1.com in a browser\n"
-            "2. Open Developer Tools (F12) -> Network tab\n"
-            "3. Filter by 'api.formula1.com'\n"
-            "4. Make any API request (e.g., try to log in)\n"
-            "5. Check the request headers for the 'apikey' value\n"
-            "6. Set it: export F1_API_KEY='your_key_here'"
-        )
-        logger.error(error_msg)
-        raise Exception(error_msg)
-    
     try:
-        logger.info("Authenticating with F1 TV Pro for email: %s", email)
+        # Decode headers to get the kid
+        unverified_header = jwt.get_unverified_header(token)
+        kid = unverified_header.get('kid')
         
-        async with httpx.AsyncClient() as client:
-            # Build headers
-            headers = {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Origin": "https://www.formula1.com",
-                "Referer": "https://www.formula1.com/",
-                "apikey": F1_API_KEY,
-            }
+        if not kid:
+            return False
             
-            response = await client.post(
-                F1_AUTH_URL,
-                headers=headers,
-                json={
-                    "Login": email,
-                    "Password": password,
-                },
-            )
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            # Extract cookies from response headers
-            cookies = response.headers.get("set-cookie", "")
-            
-            # Extract token from response
-            access_token = ""
-            
-            # Try various possible token fields
-            if isinstance(data, dict):
-                if "token" in data:
-                    access_token = data["token"]
-                elif "data" in data and isinstance(data["data"], dict):
-                    if "token" in data["data"]:
-                        access_token = data["data"]["token"]
-                    elif "subscriptionToken" in data["data"]:
-                        access_token = data["data"]["subscriptionToken"]
-                elif "SubscriptionToken" in data:
-                    access_token = data["SubscriptionToken"]
-                elif "Data" in data and isinstance(data["Data"], dict):
-                    if "SubscriptionToken" in data["Data"]:
-                        access_token = data["Data"]["SubscriptionToken"]
-            
-            # Fallback to cookies if no token found in response
-            if not access_token:
-                if cookies:
-                    access_token = cookies
-                else:
-                    # Last resort: use response data as string
-                    access_token = str(data)
-            
-            logger.info("F1 TV Pro authentication successful")
-            
-            return {
-                "access_token": access_token,
-                "cookies": cookies,
-                "data": data,
-                "success": True,
-            }
-            
-    except httpx.HTTPStatusError as e:
-        error_msg = f"F1 TV Pro authentication failed with status {e.response.status_code}: {e.response.text}"
-        logger.error(error_msg)
-        raise Exception(error_msg)
+        jwk = _get_jwk_from_jwks_uri(JWKS_URL, kid)
+
+        # Convert JWK to public key
+        public_key = RSAAlgorithm.from_jwk(jwk)
+
+        # Verify and decode the token
+        jwt.decode(
+            token,
+            key=public_key,
+            algorithms=["RS256"],
+            verify=True
+        )
+        return True
     except Exception as e:
-        error_msg = f"F1 TV Pro authentication error: {str(e)}"
-        logger.error(error_msg)
-        raise Exception(error_msg)
+        logger.warning(f"Token validation failed: {e}")
+        return False
+
+
+def get_saved_token() -> Optional[str]:
+    """Retrieve the saved subscription token from file."""
+    if AUTH_DATA_FILE.exists():
+        try:
+            with open(AUTH_DATA_FILE, 'r') as f:
+                token = f.read().strip()
+                if token:
+                    return token
+        except Exception as e:
+            logger.error(f"Error reading auth file: {e}")
+    return None
+
+
+async def authenticate_f1tv(email: str = "", password: str = "") -> Dict[str, Any]:
+    """
+    Authenticate with F1 TV Pro.
+    
+    Prioritizes:
+    1. Saved subscription token (verified)
+    2. Email/Password (Legacy/Unreliable)
+    """
+    # 1. Try saved token
+    token = get_saved_token()
+    if token:
+        if validate_subscription_token(token):
+            logger.info("Using valid saved subscription token")
+            return {
+                "access_token": token,
+                "success": True,
+                "method": "token"
+            }
+        else:
+            logger.warning("Saved token is invalid or expired")
+
+    # 2. Try password auth (Legacy)
+    if email and password:
+        if not F1_API_KEY:
+            raise Exception("F1_API_KEY required for password authentication")
+            
+        try:
+            logger.info("Attempting password authentication for %s", email)
+            async with httpx.AsyncClient() as client:
+                headers = {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Origin": "https://www.formula1.com",
+                    "apikey": F1_API_KEY,
+                }
+                
+                response = await client.post(
+                    F1_AUTH_URL,
+                    headers=headers,
+                    json={"Login": email, "Password": password},
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                # Extract token logic (simplified from previous version)
+                access_token = ""
+                if isinstance(data, dict):
+                    if "data" in data and "subscriptionToken" in data["data"]:
+                        access_token = data["data"]["subscriptionToken"]
+                    elif "SubscriptionToken" in data:
+                        access_token = data["SubscriptionToken"]
+                
+                if access_token:
+                    return {
+                        "access_token": access_token,
+                        "success": True,
+                        "method": "password"
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Password authentication failed: {e}")
+            
+    raise Exception("Authentication failed. Please use 'python auth_helper.py' to generate a new token.")

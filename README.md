@@ -39,3 +39,7 @@ curl http://localhost:8000/years
 ```
 curl https://localhost:8000/session-types
 ```
+
+# Attribution
+
+This project uses [FastF1](https://github.com/theOehrly/Fast-F1) for data retrieval.

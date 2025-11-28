@@ -8,18 +8,40 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
+import httpx
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 
 logger = logging.getLogger(__name__)
 
-# F1 SignalR Hub URL - WebSocket URLs must use wss:// for secure connections
-F1_SIGNALR_URL = "wss://livetiming.formula1.com/signalr"
-# Alternative URL that might be used:
-# F1_SIGNALR_URL = "wss://api.formula1.com/v1/livetiming/signalr"
+# F1 SignalR Hub Configuration
+# The negotiation endpoint is: https://livetiming.formula1.com/signalrcore/negotiate
+# The hub name for F1 live timing is typically "Streaming"
+F1_SIGNALR_BASE_URL = "https://livetiming.formula1.com/signalrcore"
+F1_SIGNALR_NEGOTIATE_URL = f"{F1_SIGNALR_BASE_URL}/negotiate"
+F1_SIGNALR_HUB_NAME = "Streaming"  # F1's SignalR hub name
+
+# Try different possible endpoints (will try them in order if connection fails):
+F1_SIGNALR_URLS = [
+    "wss://livetiming.formula1.com/signalrcore",  # Direct WebSocket (preferred by Fast-F1)
+    F1_SIGNALR_BASE_URL,  # HTTPS base URL
+    "https://livetiming.formula1.com/signalr",  # Fallback (older format)
+]
+F1_SIGNALR_URL = F1_SIGNALR_URLS[0]  # Default to first URL
 
 # Directory to store stream log files
 STREAM_LOGS_DIR = Path("stream_logs")
+
+# Topics to subscribe to (from Fast-F1)
+F1_TOPICS = [
+    "Heartbeat", "AudioStreams", "DriverList",
+    "ExtrapolatedClock", "RaceControlMessages",
+    "SessionInfo", "SessionStatus", "TeamRadio",
+    "TimingAppData", "TimingStats", "TrackStatus",
+    "WeatherData", "Position.z", "CarData.z",
+    "ContentStreams", "SessionData", "TimingData",
+    "TopThree", "RcmSeries", "LapCount"
+]
 
 
 class F1SignalRStreamer:
@@ -42,6 +64,7 @@ class F1SignalRStreamer:
         self.log_file_path: Optional[Path] = None
         self.log_file_handle: Optional[Any] = None
         self.is_connected = False
+        self.connected_event = threading.Event() # Initialize connected_event
         self._setup_log_directory()
         self._setup_log_file()
     
@@ -85,66 +108,211 @@ class F1SignalRStreamer:
             except Exception as e:
                 logger.error(f"Error writing to log file: {e}")
     
-    def connect(self):
-        """Establish connection to F1 SignalR hub."""
+    def _build_headers(self) -> Dict[str, str]:
+        """Build authentication headers for SignalR connection."""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Origin": "https://www.formula1.com",
+            "Referer": "https://www.formula1.com/",
+        }
+        
+        # Add authentication
+        # For F1 SignalR, the token is typically passed via the access_token_factory in signalrcore
+        # which appends it to the query string as 'access_token' or in the Authorization header.
+        # However, we also set it here just in case.
+        if self.access_token:
+            # headers["Authorization"] = f"JWT {self.access_token}" # Fast-F1 doesn't seem to send this in headers explicitly for SignalR, only access_token_factory
+            pass
+
+        # Add User-Agent (Fast-F1 uses BestHTTP often, or default)
+        headers["User-Agent"] = "BestHTTP" 
+        headers["Accept-Encoding"] = "gzip, identity"
+        
+        return headers
+
+    def _get_awsalbcors_cookie(self) -> Optional[str]:
+        """
+        Fetch AWSALBCORS cookie via OPTIONS request to negotiate endpoint.
+        Required for F1 SignalR connection.
+        """
         try:
-            logger.info(f"Connecting to F1 SignalR hub: {F1_SIGNALR_URL}")
+            logger.info(f"Fetching AWSALBCORS cookie from {F1_SIGNALR_NEGOTIATE_URL}")
+            # Fast-F1 uses requests.options
+            response = httpx.options(F1_SIGNALR_NEGOTIATE_URL, headers={"User-Agent": "BestHTTP"})
             
-            # Build the SignalR connection with authentication
-            # signalrcore uses a different API structure
-            def get_access_token():
-                return self.access_token
-            
-            # Build headers with authentication
-            headers = {
-                "User-Agent": "F1-Dashboard/1.0",
-            }
-            
-            # Add authentication - try both token and cookie approaches
-            if self.access_token:
-                # If token looks like a cookie string, use Cookie header
-                if "=" in self.access_token or self.cookies:
-                    headers["Cookie"] = self.cookies or self.access_token
-                else:
-                    # Otherwise use Bearer token
-                    headers["Authorization"] = f"Bearer {self.access_token}"
-            
-            # Add cookies if available
-            if self.cookies:
-                headers["Cookie"] = self.cookies
-            
-            self.connection = HubConnectionBuilder() \
-                .with_url(
-                    F1_SIGNALR_URL,
-                    options={
-                        "access_token_factory": get_access_token,
-                        "headers": headers
-                    }
-                ) \
-                .configure_logging(logging.INFO) \
-                .with_automatic_reconnect({
-                    "type": "raw",
-                    "keep_alive_interval": 10,
-                    "reconnect_interval": 5,
-                    "max_attempts": 5
-                }) \
-                .build()
-            
-            # Set up event handlers
-            self._setup_handlers()
-            
-            # Start the connection (signalrcore uses synchronous start)
-            self.connection.start()
-            self.is_connected = True
-            self._log_event("connection", {"status": "connected", "url": F1_SIGNALR_URL})
-            logger.info("Successfully connected to F1 SignalR hub")
-            
+            # Check for Set-Cookie header or cookies in client
+            cookie = response.cookies.get("AWSALBCORS")
+            if cookie:
+                logger.info(f"Got AWSALBCORS cookie: {cookie[:10]}...")
+                return f"AWSALBCORS={cookie}"
+            else:
+                logger.warning("AWSALBCORS cookie not found in response")
+                return None
         except Exception as e:
-            self.is_connected = False
-            error_msg = f"Failed to connect to F1 SignalR hub: {str(e)}"
-            logger.error(error_msg)
-            self._log_event("error", {"error": error_msg, "type": "connection_error"})
-            raise
+            logger.warning(f"Failed to fetch AWSALBCORS cookie: {e}")
+            return None
+    
+    def _test_negotiation(self) -> Optional[Dict[str, Any]]:
+        """
+        Manually test the SignalR negotiation endpoint.
+        This helps debug connection issues.
+        
+        SignalR Core negotiation uses GET with query parameters:
+        - connectionData: JSON-encoded array of hub names
+        - clientProtocol: Protocol version (typically 1.5)
+        
+        Returns:
+            Negotiation response data if successful, None otherwise
+        """
+        try:
+            import urllib.parse
+            
+            logger.info(f"Testing negotiation endpoint: {F1_SIGNALR_NEGOTIATE_URL}")
+            headers = self._build_headers()
+            
+            # SignalR Core negotiation uses GET with query parameters
+            # connectionData should be JSON-encoded array of hub objects
+            connection_data = json.dumps([{"name": F1_SIGNALR_HUB_NAME}])
+            encoded_connection_data = urllib.parse.quote(connection_data)
+            
+            # Build negotiation URL with query parameters
+            negotiate_url = f"{F1_SIGNALR_NEGOTIATE_URL}?connectionData={encoded_connection_data}&clientProtocol=1.5"
+            
+            # Try GET request (SignalR Core uses GET for negotiation)
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                response = client.get(
+                    negotiate_url,
+                    headers=headers
+                )
+                
+                logger.info(f"Negotiation response status: {response.status_code}")
+                logger.debug(f"Negotiation response headers: {dict(response.headers)}")
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        logger.info(f"Negotiation successful. Response keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                        logger.debug(f"Full negotiation response: {json.dumps(data, indent=2)}")
+                        return data
+                    except json.JSONDecodeError:
+                        logger.warning(f"Negotiation returned non-JSON response: {response.text[:200]}")
+                        return None
+                else:
+                    logger.warning(f"Negotiation failed with status {response.status_code}")
+                    logger.warning(f"Response text: {response.text[:500]}")
+                    return None
+                    
+        except Exception as e:
+            logger.warning(f"Error testing negotiation: {e}", exc_info=True)
+            return None
+    
+    def connect(self):
+        """Establish connection to F1 SignalR hub. Tries multiple URL formats if needed."""
+        last_error = None
+        
+        # Test negotiation endpoint first (for debugging)
+        negotiation_result = self._test_negotiation()
+        if negotiation_result:
+            logger.info("Negotiation test successful - proceeding with connection")
+        else:
+            logger.warning("Negotiation test failed or skipped - will attempt connection anyway")
+        
+        # Try each URL format until one works
+        for url in F1_SIGNALR_URLS:
+            try:
+                logger.info(f"Attempting to connect to F1 SignalR hub: {url}")
+                
+                # Fetch AWSALBCORS cookie if needed
+                aws_cookie = self._get_awsalbcors_cookie()
+                
+                # Build headers with authentication
+                headers = self._build_headers()
+                
+                if aws_cookie:
+                    if "Cookie" in headers:
+                        headers["Cookie"] += f"; {aws_cookie}"
+                    else:
+                        headers["Cookie"] = aws_cookie
+                
+                # Log headers (without sensitive data)
+                safe_headers = {k: (v[:50] + "..." if len(str(v)) > 50 else v) for k, v in headers.items()}
+                logger.debug(f"Connection headers: {safe_headers}")
+                
+                # Build connection options
+                # signalrcore expects options dict with specific keys
+                connection_options = {
+                    "headers": headers
+                }
+                
+                # Set access_token_factory for signalrcore
+                if self.access_token:
+                    def get_access_token():
+                        return self.access_token
+                    connection_options["access_token_factory"] = get_access_token
+                
+                # Clean up previous connection attempt if any
+                if self.connection:
+                    try:
+                        self.connection.stop()
+                    except:
+                        pass
+                
+                self.connection = HubConnectionBuilder() \
+                    .with_url(
+                        url,
+                        options=connection_options
+                    ) \
+                    .configure_logging(logging.INFO) \
+                    .with_automatic_reconnect({
+                        "type": "raw",
+                        "keep_alive_interval": 10,
+                        "reconnect_interval": 5,
+                        "max_attempts": 5
+                    }) \
+                    .build()
+                
+                # Set up event handlers
+                self._setup_handlers()
+                
+                # Start the connection (signalrcore uses synchronous start)
+                logger.info(f"Attempting to start SignalR connection to {url}...")
+                self.connection.start()
+                
+                # Wait for connection to be established
+                if not self.connected_event.wait(timeout=10):
+                    logger.error("Timeout waiting for connection to open")
+                    self.connection.stop()
+                    raise TimeoutError("Failed to connect to SignalR hub")
+
+                self.is_connected = True
+                self._log_event("connection", {"status": "connected", "url": url})
+                logger.info(f"Successfully connected to F1 SignalR hub at {url}")
+                return  # Success - exit the loop
+                
+            except Exception as e:
+                last_error = e
+                error_msg = f"Failed to connect to {url}: {str(e)}"
+                logger.warning(error_msg)
+                self._log_event("error", {
+                    "error": error_msg, 
+                    "type": "connection_error", 
+                    "url": url,
+                    "exception_type": str(type(e).__name__)
+                })
+                # Continue to next URL
+                continue
+        
+        # If we get here, all URLs failed
+        self.is_connected = False
+        final_error_msg = f"Failed to connect to F1 SignalR hub with all attempted URLs. Last error: {str(last_error)}"
+        logger.error(final_error_msg, exc_info=True)
+        self._log_event("error", {
+            "error": final_error_msg, 
+            "type": "connection_error", 
+            "exception_type": str(type(last_error).__name__) if last_error else "Unknown",
+            "attempted_urls": F1_SIGNALR_URLS
+        })
+        raise Exception(final_error_msg) from last_error
     
     def _setup_handlers(self):
         """Set up SignalR event handlers."""
@@ -152,50 +320,45 @@ class F1SignalRStreamer:
             return
         
         # Handle connection events
-        # Note: signalrcore callbacks may not always receive arguments
-        def on_connected(*args):
+        def on_open(*args):
             message = args[0] if args else None
             self.is_connected = True
             self._log_event("connection", {"status": "connected", "message": message})
+            self.connected_event.set() # Set event when connection is open
         
-        def on_disconnected(*args):
+        def on_close(*args):
             message = args[0] if args else None
             self.is_connected = False
             self._log_event("connection", {"status": "disconnected", "message": message})
+            self.connected_event.clear() # Clear event when connection is closed
         
         # Register connection event handlers
-        self.connection.on_open(on_connected)
-        self.connection.on_close(on_disconnected)
+        self.connection.on_open(on_open)
+        self.connection.on_close(on_close)
         
         # Handle generic message events
-        # Note: F1's actual event names may vary - these are common SignalR patterns
-        # We'll need to adjust based on actual F1 API documentation
-        
-        # Try to register handlers for common F1 live timing events
-        # These are examples and may need adjustment:
-        event_handlers = [
-            "CarData", "Position", "ExtrapolatedClock", "TimingData",
-            "TimingStats", "WeatherData", "TrackStatus", "SessionInfo",
-            "RaceControlMessages", "TimingAppData", "ReceiveMessage"
-        ]
-        
-        def create_handler(event_name: str):
-            def handler(*args):
-                # Handle different argument patterns
-                if len(args) == 1:
-                    data = args[0]
-                else:
-                    data = args
-                self._log_event("message", {"event_name": event_name, "payload": data})
-            return handler
-        
-        # Register handlers for each event type
-        for event_name in event_handlers:
+        # F1 sends all data via the "feed" event
+        def on_feed_message(*args):
             try:
-                handler = create_handler(event_name)
-                self.connection.on(event_name, handler)
+                # args[0] is typically the payload list: [message_type, data, timestamp]
+                if args and len(args) > 0:
+                    payload = args[0]
+                    if isinstance(payload, list) and len(payload) >= 2:
+                        message_type = payload[0]
+                        message_data = payload[1]
+                        self._log_event("message", {"event_name": message_type, "payload": message_data})
+                    else:
+                        self._log_event("message", {"event_name": "feed", "payload": payload})
+                else:
+                    logger.warning("Received empty feed message")
             except Exception as e:
-                logger.warning(f"Could not register handler for {event_name}: {e}")
+                logger.error(f"Error processing feed message: {e}")
+
+        try:
+            self.connection.on("feed", on_feed_message)
+            logger.info("Registered 'feed' event handler")
+        except Exception as e:
+            logger.error(f"Could not register 'feed' handler: {e}")
         
         # Fallback: catch all messages using a generic handler
         def on_any_message(*args):
@@ -231,13 +394,12 @@ class F1SignalRStreamer:
             
             for method in subscription_methods:
                 try:
-                    # signalrcore uses invoke() for server method calls
-                    if session_key:
-                        self.connection.invoke(method, session_key)
-                    else:
-                        self.connection.invoke(method)
-                    logger.info(f"Subscribed to {method}")
-                    self._log_event("subscription", {"method": method, "session_key": session_key})
+                    # signalrcore uses send() for server method calls (at least in the version Fast-F1 uses)
+                    # Fast-F1 sends: "Subscribe", [self.topics]
+                    self.connection.send(method, [F1_TOPICS])
+                    
+                    logger.info(f"Subscribed to {method} with topics")
+                    self._log_event("subscription", {"method": method, "topics": F1_TOPICS})
                     break  # If one works, we're done
                 except Exception as e:
                     logger.debug(f"Subscription method {method} failed: {e}")
@@ -256,6 +418,7 @@ class F1SignalRStreamer:
             if self.connection and self.is_connected:
                 self.connection.stop()
                 self.is_connected = False
+                self.connected_event.clear() # Clear event on manual disconnect
                 self._log_event("connection", {"status": "disconnected", "reason": "manual"})
                 logger.info("Disconnected from F1 SignalR hub")
         except Exception as e:

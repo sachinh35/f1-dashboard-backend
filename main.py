@@ -210,15 +210,24 @@ async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
     try:
         logging.info("Request: starting live stream")
         
-        if not request.access_token:
-            raise HTTPException(
-                status_code=400,
-                detail="access_token is required"
-            )
+        token = request.access_token
+        
+        # If no token provided, try to load saved token
+        if not token:
+            logging.info("No access token in request, attempting to load saved token")
+            saved_token = f1_auth.get_saved_token()
+            if saved_token and f1_auth.validate_subscription_token(saved_token):
+                token = saved_token
+                logging.info("Using saved subscription token")
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No access token provided and no valid saved token found. Please authenticate first."
+                )
         
         # Start the stream
         streamer = live_stream.start_stream(
-            access_token=request.access_token,
+            access_token=token,
             refresh_token=request.refresh_token,
             cookies=request.cookies
         )
@@ -238,6 +247,8 @@ async def start_live_stream(request: StartStreamRequest) -> StartStreamResponse:
             log_file=stream_info["log_file"] or "unknown"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logging.exception("Error starting live stream")
         raise HTTPException(

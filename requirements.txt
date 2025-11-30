@@ -8,3 +8,4 @@ signalrcore
 platformdirs
 pyjwt
 cryptography
+websockets
